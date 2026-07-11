@@ -216,6 +216,8 @@ All endpoints return `{ error: string }` with a non-2xx status on failure (e.g. 
 
 The server only binds to `127.0.0.1` and has no authentication, so the supported way to use it from a machine other than the one running `adb` is an SSH tunnel, not opening the port on the network.
 
+<img width="1180" height="913" alt="Screenshot 2026-07-10 at 5 52 38 PM" src="https://github.com/user-attachments/assets/fcd5ece8-f230-44a0-8420-b6a4c2f86ddd" />
+
 On the machine with the Android device attached:
 
 ```bash

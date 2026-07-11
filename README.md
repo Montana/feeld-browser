@@ -11,6 +11,7 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 ## Contents
 
 - [How it works](#how-it-works)
+- [How a match happens through this bridge](#how-a-match-happens-through-this-bridge)
 - [Requirements](#requirements)
 - [Setup](#setup)
 - [Run](#run)
@@ -40,6 +41,27 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 - The device connection (`adb devices`) is only re-verified periodically (every 3s) or immediately after an error, not on every single frame capture, to keep ADB overhead low.
 - The browser holds a persistent `EventSource` connection to `/api/events`. The server pushes a status payload over Server-Sent Events every time a new frame is captured or an error occurs, instead of the browser polling blindly. The browser only re-fetches `/api/frame.jpg` when the pushed `frameVersion` actually changes.
 - Every pointer/keyboard action in the browser becomes exactly one `adb shell input ...` call. Coordinates are translated from on-screen pixels back to the device's real resolution before being sent.
+
+## How a match happens through this bridge
+
+Matching logic never runs in this codebase. The bridge only relays the single touch you made and shows back whatever the official app renders; Feeld's app and servers make every decision about likes, passes, and matches, exactly as they would if you were holding the phone.
+
+```mermaid
+flowchart TD
+    A[You see a profile card in the mirrored browser view] --> B[You click or drag on that card yourself]
+    B --> C[Browser sends one tap or swipe request to the bridge server]
+    C --> D["Server runs adb shell input tap / swipe"]
+    D --> E[Android delivers a normal touch event to the Feeld app]
+    E --> F[Feeld's own app and servers evaluate the like/pass and any match]
+    F --> G{Mutual like?}
+    G -->|Yes| H[Feeld's official app shows its match screen]
+    G -->|No| I[Feeld's official app moves to the next card]
+    H --> J[Next adb screencap captures whatever is on screen]
+    I --> J
+    J --> K[Bridge pushes the new frame to your browser over SSE]
+```
+
+Nothing here queues actions, reads Feeld's private API, or infers who to swipe on; each step only exists because you performed exactly one manual gesture.
 
 ## Requirements
 

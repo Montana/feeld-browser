@@ -333,11 +333,21 @@ server.on("error", (error) => {
   throw error;
 });
 
-function shutdown() {
+function shutdown(exitCode = 0) {
   clearInterval(captureTimer);
   for (const client of sseClients) client.end();
-  server.close(() => process.exit(0));
+  server.close(() => process.exit(exitCode));
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => shutdown(0));
+process.on("SIGTERM", () => shutdown(0));
+
+process.on("uncaughtException", (error) => {
+  console.error(`Uncaught exception: ${errorMessage(error)}`);
+  shutdown(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error(`Unhandled promise rejection: ${errorMessage(reason)}`);
+  shutdown(1);
+});

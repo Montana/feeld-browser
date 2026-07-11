@@ -11,6 +11,7 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 ## Contents
 
 - [How it works](#how-it-works)
+- [Event listeners](#event-listeners)
 - [How a match happens through this bridge](#how-a-match-happens-through-this-bridge)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -41,6 +42,30 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 - The device connection (`adb devices`) is only re-verified periodically (every 3s) or immediately after an error, not on every single frame capture, to keep ADB overhead low.
 - The browser holds a persistent `EventSource` connection to `/api/events`. The server pushes a status payload over Server-Sent Events every time a new frame is captured or an error occurs, instead of the browser polling blindly. The browser only re-fetches `/api/frame.jpg` when the pushed `frameVersion` actually changes.
 - Every pointer/keyboard action in the browser becomes exactly one `adb shell input ...` call. Coordinates are translated from on-screen pixels back to the device's real resolution before being sent.
+
+## Event listeners
+
+### Server (`server.js`)
+
+| Listener | Registered on | Purpose |
+| --- | --- | --- |
+| `"error"` | `server` (the `http.Server` returned by `app.listen`) | Prints a friendly message and exits if `PORT` is already in use (`EADDRINUSE`); rethrows anything else. |
+| `"close"` | each SSE request in `/api/events` | Removes that client from the broadcast set once the browser tab closes or navigates away. |
+| `"SIGINT"` / `"SIGTERM"` | `process` | Stops the capture timer, closes all open SSE connections, and closes the HTTP server before exiting. |
+| `"uncaughtException"` | `process` | Logs the error and shuts down instead of leaving a raw stack trace and a hung process. |
+| `"unhandledRejection"` | `process` | Same safety net as above, for a promise rejection nothing awaited or caught. |
+
+### Browser (`public/index.html`)
+
+| Listener | Element | Purpose |
+| --- | --- | --- |
+| `"pointerdown"` | `#screen` | Starts tracking a tap/swipe/long-press gesture and arms the long-press timer. |
+| `"pointermove"` | `#screen` | Updates the drag indicator; cancels the long-press timer once the pointer moves past the threshold. |
+| `"pointerup"` | `#screen` | Resolves the gesture into a tap or swipe (or does nothing if a long-press already fired). |
+| `"pointercancel"` | `#screen` | Clears in-progress gesture state if the OS cancels the pointer. |
+| `"click"` | hardware buttons (`[data-key]`, `#open`, `#wake`, `#sendText`) | Sends the corresponding `/api/...` request. |
+| `"keydown"` | `#text` input | Submits typed text when Enter is pressed. |
+| `"message"` / `"error"` | `EventSource` (`/api/events`) | Applies pushed status/frame updates; shows "Reconnecting…" if the stream drops (it reconnects automatically). |
 
 ## How a match happens through this bridge
 

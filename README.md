@@ -1,4 +1,6 @@
-# Feeld Browser Bridge
+# FEELD Browser Bridge
+
+<img width="1318" height="656" alt="Screenshot 2026-07-10 at 5 39 02 PM" src="https://github.com/user-attachments/assets/c437a134-fa86-437d-b775-95816828115a" />
 
 A small local web interface that mirrors your connected Android device's screen in a desktop browser and forwards manual taps, swipes, long-presses, text, and hardware-button events through Android Debug Bridge (ADB).
 

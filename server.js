@@ -8,11 +8,30 @@ import sharp from "sharp";
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function requireValidPort(rawValue, value) {
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    console.error(`Invalid PORT '${rawValue}'. Set PORT to an integer between 1 and 65535.`);
+    process.exit(1);
+  }
+  return value;
+}
+
+function requireValidInterval(rawValue, value) {
+  if (!Number.isFinite(value)) {
+    console.error(`Invalid FRAME_INTERVAL_MS '${rawValue}'. Set it to a number of milliseconds.`);
+    process.exit(1);
+  }
+  return value;
+}
+
 const HOST = process.env.HOST ?? "127.0.0.1";
-const PORT = Number(process.env.PORT ?? 4173);
+const PORT = requireValidPort(process.env.PORT, Number(process.env.PORT ?? 4173));
 const ADB_SERIAL = process.env.ADB_SERIAL?.trim() || null;
 const FEELD_PACKAGE = process.env.FEELD_PACKAGE?.trim() || "co.feeld";
-const FRAME_INTERVAL_MS = Math.max(250, Number(process.env.FRAME_INTERVAL_MS ?? 450));
+const FRAME_INTERVAL_MS = Math.max(
+  250,
+  requireValidInterval(process.env.FRAME_INTERVAL_MS, Number(process.env.FRAME_INTERVAL_MS ?? 450))
+);
 
 const app = express();
 app.disable("x-powered-by");
@@ -35,6 +54,26 @@ const sseClients = new Set();
 
 function adbArgs(args) {
   return ADB_SERIAL ? ["-s", ADB_SERIAL, ...args] : args;
+}
+
+function errorMessage(error) {
+  if (error?.code === "ENOENT") {
+    return "adb was not found on PATH. Install Android Platform Tools and confirm `adb` runs in a terminal.";
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (error?.killed || /timed out/i.test(message)) {
+    return "The adb command timed out. Check the USB connection and that the device is unlocked.";
+  }
+  return message;
+}
+
+// Serializes adb input commands so rapid clicks can't spawn overlapping
+// `adb shell` processes that race or arrive at the device out of order.
+let inputQueue = Promise.resolve();
+function queueInput(task) {
+  const run = inputQueue.then(task, task);
+  inputQueue = run.then(() => {}, () => {});
+  return run;
 }
 
 async function adbText(args, timeout = 8000) {
@@ -97,11 +136,18 @@ function broadcastStatus() {
 
 async function captureFrame() {
   if (capturing) return;
+
+  const now = Date.now();
+  const dueForRecheck = now - lastDeviceCheckAt > DEVICE_RECHECK_MS;
+
+  // While a known error persists, only retry at the recheck cadence instead
+  // of spawning an adb process on every single capture tick.
+  if (lastError && !dueForRecheck) return;
+
   capturing = true;
 
   try {
-    const now = Date.now();
-    if (lastError || now - lastDeviceCheckAt > DEVICE_RECHECK_MS) {
+    if (dueForRecheck) {
       await assertDevice();
       lastDeviceCheckAt = now;
     }
@@ -124,15 +170,20 @@ async function captureFrame() {
     lastFrameAt = new Date().toISOString();
     lastError = null;
   } catch (error) {
-    lastError = error instanceof Error ? error.message : String(error);
+    lastError = errorMessage(error);
   } finally {
     capturing = false;
     broadcastStatus();
   }
 }
 
-setInterval(captureFrame, FRAME_INTERVAL_MS).unref();
+const captureTimer = setInterval(captureFrame, FRAME_INTERVAL_MS);
+captureTimer.unref();
 await captureFrame();
+
+if (lastError) {
+  console.warn(`Feeld Browser Bridge: initial screen capture failed: ${lastError}`);
+}
 
 app.get("/api/status", (_req, res) => {
   res.set("Cache-Control", "no-store");
@@ -181,10 +232,10 @@ app.post("/api/tap", async (req, res) => {
     if (!sourceWidth || !sourceHeight) throw new Error("Screen dimensions are not available yet.");
     const x = Math.round(clamp(finiteNumber(req.body.x, "x"), 0, sourceWidth - 1));
     const y = Math.round(clamp(finiteNumber(req.body.y, "y"), 0, sourceHeight - 1));
-    await adbText(["shell", "input", "tap", String(x), String(y)]);
+    await queueInput(() => adbText(["shell", "input", "tap", String(x), String(y)]));
     res.json({ ok: true });
   } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -197,13 +248,13 @@ app.post("/api/swipe", async (req, res) => {
     const y2 = Math.round(clamp(finiteNumber(req.body.y2, "y2"), 0, sourceHeight - 1));
     const duration = Math.round(clamp(finiteNumber(req.body.duration ?? 280, "duration"), 80, 1500));
 
-    await adbText([
+    await queueInput(() => adbText([
       "shell", "input", "swipe",
       String(x1), String(y1), String(x2), String(y2), String(duration)
-    ]);
+    ]));
     res.json({ ok: true });
   } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -216,10 +267,10 @@ app.post("/api/key", async (req, res) => {
   try {
     const key = String(req.body.key ?? "").toUpperCase();
     if (!ALLOWED_KEYS.has(key)) throw new Error("Unsupported key.");
-    await adbText(["shell", "input", "keyevent", `KEYCODE_${key}`]);
+    await queueInput(() => adbText(["shell", "input", "keyevent", `KEYCODE_${key}`]));
     res.json({ ok: true });
   } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
@@ -241,35 +292,52 @@ app.post("/api/type", async (req, res) => {
       throw new Error("This typing bridge currently supports basic ASCII text only.");
     }
 
-    await adbText(["shell", "input", "text", encodeAndroidInputText(text)]);
+    await queueInput(() => adbText(["shell", "input", "text", encodeAndroidInputText(text)]));
     res.json({ ok: true });
   } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    res.status(400).json({ error: errorMessage(error) });
   }
 });
 
 app.post("/api/open-feeld", async (_req, res) => {
   try {
-    await adbText([
+    await queueInput(() => adbText([
       "shell", "monkey", "-p", FEELD_PACKAGE,
       "-c", "android.intent.category.LAUNCHER", "1"
-    ]);
+    ]));
     res.json({ ok: true });
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ error: errorMessage(error) });
   }
 });
 
 app.post("/api/wake", async (_req, res) => {
   try {
-    await adbText(["shell", "input", "keyevent", "KEYCODE_WAKEUP"]);
+    await queueInput(() => adbText(["shell", "input", "keyevent", "KEYCODE_WAKEUP"]));
     res.json({ ok: true });
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ error: errorMessage(error) });
   }
 });
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`Feeld Browser Bridge: http://${HOST}:${PORT}`);
   console.log(`ADB target: ${ADB_SERIAL ?? "the only connected device"}`);
 });
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} is already in use. Set PORT to a different value.`);
+    process.exit(1);
+  }
+  throw error;
+});
+
+function shutdown() {
+  clearInterval(captureTimer);
+  for (const client of sseClients) client.end();
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

@@ -4,8 +4,19 @@
   "private": true,
   "description": "Local browser-based remote control for the official Feeld Android app through ADB.",
   "type": "module",
+  "author": "Michael Mendy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Montana/feeld-browser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Montana/feeld-browser/issues"
+  },
+  "homepage": "https://github.com/Montana/feeld-browser#readme",
   "scripts": {
     "start": "node server.js",
+    "start:env": "node --env-file=.env server.js",
     "check": "node --check server.js"
   },
   "engines": {

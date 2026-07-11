@@ -227,3 +227,6 @@ npm start
 ```
 
 There is no build step or bundler. `server.js` is plain ESM run directly by Node, and `public/index.html` is a single static file with inline CSS/JS served as-is.
+
+## Author 
+Michael  Mendy (c) 2026.

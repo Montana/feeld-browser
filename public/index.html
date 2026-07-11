@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Feeld Browser Bridge</title>
+  <style>
+    :root {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #f7f3f5;
+      background: #100d0f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(109, 53, 85, .22), transparent 38rem),
+        #100d0f;
+    }
+
+    button, input { font: inherit; }
+
+    .app {
+      width: min(1180px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 22px 0 32px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    h1 { margin: 0; font-size: clamp(1.2rem, 2vw, 1.65rem); }
+    .sub { margin: 4px 0 0; color: #bfb4ba; font-size: .9rem; }
+
+    #status {
+      border: 1px solid #4e454a;
+      border-radius: 999px;
+      padding: 7px 11px;
+      color: #ddd3d8;
+      font-size: .8rem;
+      white-space: nowrap;
+    }
+
+    #status.ok { border-color: #3c6c50; color: #aee0be; }
+    #status.error { border-color: #81414d; color: #ffb6c1; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 440px) minmax(250px, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .phone-shell {
+      width: 100%;
+      border: 1px solid #41383d;
+      border-radius: 30px;
+      padding: 10px;
+      background: #050405;
+      box-shadow: 0 22px 70px rgba(0, 0, 0, .36);
+    }
+
+    .screen {
+      position: relative;
+      overflow: hidden;
+      border-radius: 22px;
+      background: #191519;
+      min-height: 520px;
+      user-select: none;
+      touch-action: none;
+      cursor: crosshair;
+    }
+
+    #frame {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 520px;
+      object-fit: contain;
+      pointer-events: none;
+    }
+
+    .drag-dot {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border: 2px solid white;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      opacity: 0;
+      box-shadow: 0 0 0 4px rgba(255,255,255,.18);
+    }
+
+    .panel {
+      border: 1px solid #41383d;
+      border-radius: 20px;
+      background: rgba(25, 20, 23, .82);
+      padding: 18px;
+    }
+
+    .panel h2 { margin: 0 0 12px; font-size: 1rem; }
+    .panel p { color: #bfb4ba; line-height: 1.48; font-size: .9rem; }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+      margin-bottom: 18px;
+    }
+
+    button {
+      border: 1px solid #55494f;
+      border-radius: 11px;
+      padding: 10px 12px;
+      color: #f7f3f5;
+      background: #2b2428;
+      cursor: pointer;
+    }
+
+    button:hover { background: #392f34; }
+    button.primary { background: #f1e8ed; color: #1a1518; border-color: #f1e8ed; }
+    button.primary:hover { background: white; }
+
+    .typing {
+      display: flex;
+      gap: 8px;
+    }
+
+    input {
+      min-width: 0;
+      flex: 1;
+      border: 1px solid #55494f;
+      border-radius: 11px;
+      padding: 10px 12px;
+      color: white;
+      background: #151114;
+      outline: none;
+    }
+
+    input:focus { border-color: #9e8a95; }
+    .hint { margin-top: 9px; font-size: .76rem; color: #8f8389; }
+    #toast { min-height: 22px; margin-top: 12px; color: #ffb6c1; font-size: .82rem; }
+
+    @media (max-width: 760px) {
+      .layout { grid-template-columns: 1fr; }
+      .phone-shell { max-width: 480px; margin: 0 auto; }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div>
+        <h1>Feeld Browser Bridge</h1>
+        <p class="sub">Local browser control for your connected Android device</p>
+      </div>
+      <div id="status">Connecting…</div>
+    </header>
+
+    <section class="layout">
+      <div class="phone-shell">
+        <div id="screen" class="screen" aria-label="Android screen">
+          <img id="frame" alt="Live Android screen" draggable="false" />
+          <div id="dragDot" class="drag-dot"></div>
+        </div>
+      </div>
+
+      <aside class="panel">
+        <h2>Device controls</h2>
+        <div class="controls">
+          <button id="open" class="primary">Open Feeld</button>
+          <button data-key="BACK">Back</button>
+          <button data-key="HOME">Home</button>
+          <button data-key="APP_SWITCH">Recent apps</button>
+          <button id="wake">Wake screen</button>
+          <button data-key="POWER">Lock screen</button>
+          <button data-key="ENTER">Enter</button>
+          <button data-key="DEL">Backspace</button>
+          <button data-key="VOLUME_UP">Volume up</button>
+          <button data-key="VOLUME_DOWN">Volume down</button>
+        </div>
+
+        <h2>Type into the focused field</h2>
+        <div class="typing">
+          <input id="text" type="text" maxlength="500" autocomplete="off" placeholder="Basic text only" />
+          <button id="sendText">Type</button>
+        </div>
+        <div class="hint">Click a text field on the phone first. Emoji and some non-ASCII characters are not supported by ADB input text.</div>
+
+        <p>Click the screen to tap. Click and drag to swipe. Press and hold to long-press. Everything stays on this computer unless you deliberately expose the local server.</p>
+        <div id="toast" role="status"></div>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    const screen = document.querySelector("#screen");
+    const frame = document.querySelector("#frame");
+    const statusEl = document.querySelector("#status");
+    const toast = document.querySelector("#toast");
+    const dragDot = document.querySelector("#dragDot");
+    const textInput = document.querySelector("#text");
+
+    let device = { sourceWidth: 0, sourceHeight: 0, frameVersion: 0 };
+    let pointerStart = null;
+    let frameLoading = false;
+    let displayedVersion = 0;
+
+    function showError(message) {
+      toast.textContent = message || "Something went wrong.";
+    }
+
+    async function api(path, body = {}) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+      toast.textContent = "";
+      return result;
+    }
+
+    function applyStatus(status) {
+      device = status;
+
+      if (device.error) {
+        statusEl.textContent = device.error;
+        statusEl.className = "error";
+      } else {
+        statusEl.textContent = device.lastFrameAt ? "Device connected" : "Waiting for screen…";
+        statusEl.className = device.lastFrameAt ? "ok" : "";
+      }
+
+      if (device.frameVersion && device.frameVersion !== displayedVersion && !frameLoading) {
+        frameLoading = true;
+        const targetVersion = device.frameVersion;
+        const preload = new Image();
+        preload.onload = () => {
+          frame.src = preload.src;
+          displayedVersion = targetVersion;
+          frameLoading = false;
+        };
+        preload.onerror = () => { frameLoading = false; };
+        preload.src = `/api/frame.jpg?v=${targetVersion}`;
+      }
+    }
+
+    function connectEvents() {
+      const events = new EventSource("/api/events");
+      events.onmessage = (event) => {
+        try {
+          applyStatus(JSON.parse(event.data));
+        } catch {
+          // ignore malformed keep-alive payloads
+        }
+      };
+      events.onerror = () => {
+        statusEl.textContent = "Reconnecting…";
+        statusEl.className = "error";
+      };
+    }
+
+    function toDevicePoint(event) {
+      const rect = frame.getBoundingClientRect();
+      if (!device.sourceWidth || !device.sourceHeight || !rect.width || !rect.height) return null;
+      return {
+        x: Math.round((event.clientX - rect.left) / rect.width * device.sourceWidth),
+        y: Math.round((event.clientY - rect.top) / rect.height * device.sourceHeight)
+      };
+    }
+
+    const LONG_PRESS_MS = 450;
+    const MOVE_THRESHOLD_PX = 10;
+    let longPressTimer = null;
+    let longPressFired = false;
+
+    function cancelLongPress() {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    }
+
+    screen.addEventListener("pointerdown", (event) => {
+      const point = toDevicePoint(event);
+      if (!point) return;
+      pointerStart = { point, clientX: event.clientX, clientY: event.clientY, time: performance.now() };
+      longPressFired = false;
+      screen.setPointerCapture(event.pointerId);
+      dragDot.style.left = `${event.offsetX}px`;
+      dragDot.style.top = `${event.offsetY}px`;
+      dragDot.style.opacity = "1";
+
+      longPressTimer = setTimeout(async () => {
+        longPressTimer = null;
+        longPressFired = true;
+        try {
+          await api("/api/swipe", {
+            x1: point.x, y1: point.y, x2: point.x, y2: point.y, duration: 550
+          });
+        } catch (error) {
+          showError(error.message);
+        }
+      }, LONG_PRESS_MS);
+    });
+
+    screen.addEventListener("pointermove", (event) => {
+      if (!pointerStart) return;
+      const rect = screen.getBoundingClientRect();
+      dragDot.style.left = `${event.clientX - rect.left}px`;
+      dragDot.style.top = `${event.clientY - rect.top}px`;
+
+      const distance = Math.hypot(event.clientX - pointerStart.clientX, event.clientY - pointerStart.clientY);
+      if (distance > MOVE_THRESHOLD_PX) cancelLongPress();
+    });
+
+    screen.addEventListener("pointerup", async (event) => {
+      if (!pointerStart) return;
+      cancelLongPress();
+      const start = pointerStart;
+      pointerStart = null;
+      dragDot.style.opacity = "0";
+
+      if (longPressFired) {
+        longPressFired = false;
+        return;
+      }
+
+      const end = toDevicePoint(event);
+      if (!end) return;
+      const distance = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
+
+      try {
+        if (distance < MOVE_THRESHOLD_PX) {
+          await api("/api/tap", start.point);
+        } else {
+          const elapsed = Math.max(100, Math.min(1200, performance.now() - start.time));
+          await api("/api/swipe", {
+            x1: start.point.x,
+            y1: start.point.y,
+            x2: end.x,
+            y2: end.y,
+            duration: elapsed
+          });
+        }
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+
+    screen.addEventListener("pointercancel", () => {
+      cancelLongPress();
+      pointerStart = null;
+      dragDot.style.opacity = "0";
+    });
+
+    document.querySelectorAll("[data-key]").forEach((button) => {
+      button.addEventListener("click", () => api("/api/key", { key: button.dataset.key }).catch((e) => showError(e.message)));
+    });
+
+    document.querySelector("#open").addEventListener("click", () => api("/api/open-feeld").catch((e) => showError(e.message)));
+    document.querySelector("#wake").addEventListener("click", () => api("/api/wake").catch((e) => showError(e.message)));
+
+    async function sendText() {
+      const text = textInput.value;
+      if (!text) return;
+      try {
+        await api("/api/type", { text });
+        textInput.value = "";
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+
+    document.querySelector("#sendText").addEventListener("click", sendText);
+    textInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") sendText();
+    });
+
+    connectEvents();
+  </script>
+</body>
+</html>

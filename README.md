@@ -24,6 +24,7 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 - [Limitations](#limitations)
 - [Security notes](#security-notes)
 - [Use via SSH](#use-via-ssh)
+  - [Sending a chat message (Type) over the SSH tunnel](#sending-a-chat-message-type-over-the-ssh-tunnel)
 - [Privacy and appropriate use](#privacy-and-appropriate-use)
 - [Development](#development)
 
@@ -268,6 +269,18 @@ Notes:
 - You need SSH access to the host running the server; this doesn't add any new authentication to the bridge itself, it reuses your existing SSH login.
 - Close the tunnel (`Ctrl+C` on the `ssh` command, or kill the session) when you're done; the forwarded port stops working immediately.
 - If you also want to reach it from a phone or tablet on the same Wi-Fi without SSH, use your SSH client's port-forwarding feature (e.g. Termius) rather than setting `HOST=0.0.0.0` on the server.
+
+### Sending a chat message (`Type`) over the SSH tunnel
+
+Typing into a Feeld chat is not a special case — it's the same `POST /api/type` request described in [Controls](#controls) and [API reference](#api-reference), so it inherits everything the tunnel already provides:
+
+1. You focus a text field on the mirrored phone screen (a normal tap forwarded through `/api/tap`), then type into the sidebar `#text` input and press Enter or click **Type**.
+2. The browser sends `POST /api/type` with `{ text }` as its body to `http://127.0.0.1:4173` — i.e. to the *local* end of the SSH tunnel on your machine, not to the remote host directly. OpenSSH forwards that TCP connection through the encrypted channel to `127.0.0.1:4173` on the machine actually running `server.js`, which is the only place the request is ever visible in the clear.
+3. The server validates and ASCII-encodes the text (see `encodeAndroidInputText` in [How it works](#how-it-works)) and pushes it onto the same `queueInput` promise chain used by every other input action. That matters over SSH specifically: network latency or jitter on the tunnel can reorder when requests *arrive*, but `queueInput` still executes the resulting `adb shell input text ...` calls strictly in server-receipt order, so a message typed just after a tap can't race ahead of it and land on the wrong screen.
+4. `adb shell input text ...` types the string into whatever field is currently focused on the device — the server has no concept of "the chat with X"; it relies entirely on you having tapped the right field first, exactly as with a direct (non-SSH) connection.
+5. The resulting screen change (the message appearing in the compose box, or the chat scrolling after you tap send) reaches you the same way every other frame does: the next `adb exec-out screencap -p` capture is pushed over the `/api/events` SSE stream and pulled via `/api/frame.jpg`, all inside the same tunnel.
+
+Because everything — the tap that focuses the field, the typed text, and the frame confirming it landed — travels over one `ssh -L` forwarded port, there is no separate "messaging channel" to secure or leak: SSH's transport encryption covers the request body (the message text itself) exactly as it covers taps and swipes. The existing limitations still apply unchanged over SSH: 500 characters, basic ASCII only (see [Controls](#controls)), and no batching — each `Type` click is one request, one `adb` call, one message.
 
 ## Privacy and appropriate use
 

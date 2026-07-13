@@ -37,7 +37,25 @@ const FRAME_INTERVAL_MS = Math.max(
 
 const app = express();
 app.disable("x-powered-by");
+app.use((_req, res, next) => {
+  res.set({
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy":
+      "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+      "script-src 'self' 'unsafe-inline'; connect-src 'self'"
+  });
+  next();
+});
 app.use(express.json({ limit: "16kb" }));
+// express.json() only populates req.body when Content-Type is
+// application/json; a request without it (or with an empty body) leaves
+// req.body undefined, which would throw on every `req.body.x` access below.
+app.use((req, _res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 app.use(express.static(path.join(__dirname, "public"), {
   etag: true,
   maxAge: "1h"
@@ -156,8 +174,11 @@ async function captureFrame() {
 
   try {
     if (dueForRecheck) {
-      await assertDevice();
+      // Stamp before the check, not after, so a persistently failing
+      // assertDevice() (e.g. device unplugged) still throttles to the
+      // recheck cadence instead of firing on every capture tick.
       lastDeviceCheckAt = now;
+      await assertDevice();
     }
 
     const png = await adbBuffer(["exec-out", "screencap", "-p"]);

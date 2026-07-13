@@ -76,6 +76,10 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 
 Matching logic never runs in this codebase. The bridge only relays the single touch you made and shows back whatever the official app renders; Feeld's app and servers make every decision about likes, passes, and matches, exactly as they would if you were holding the phone.
 
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/101712c9-31e2-4fd9-afdb-9770b1cbb324" />
+
+Above is an example of how this would work, below is a flow chart on how matches work:
+
 ```mermaid
 flowchart TD
     A[You see a profile card in the mirrored browser view] --> B[You click or drag on that card yourself]

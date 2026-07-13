@@ -38,10 +38,13 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 └──────────────────────────┘                 └───────────────────────┘          └──────────────────┘
 ```
 
-- A background loop calls `adb exec-out screencap -p` on an interval (`FRAME_INTERVAL_MS`, default 450ms, minimum 250ms), downsamples the PNG to a JPEG (max width 900px) with `sharp`, and keeps only the **latest** frame in memory. Nothing is written to disk.
-- The device connection (`adb devices`) is only re-verified periodically (every 3s) or immediately after an error, not on every single frame capture, to keep ADB overhead low.
-- The browser holds a persistent `EventSource` connection to `/api/events`. The server pushes a status payload over Server-Sent Events every time a new frame is captured or an error occurs, instead of the browser polling blindly. The browser only re-fetches `/api/frame.jpg` when the pushed `frameVersion` actually changes.
-- Every pointer/keyboard action in the browser becomes exactly one `adb shell input ...` call. Coordinates are translated from on-screen pixels back to the device's real resolution before being sent.
+- A background loop (`setInterval(captureFrame, FRAME_INTERVAL_MS)`, `.unref()`'d so it never keeps the process alive on its own) calls `adb exec-out screencap -p` via `execFile` (never a shell string — see [Security notes](#security-notes)) to fetch a raw PNG screenshot. A `capturing` boolean guards against overlapping ticks: if a capture is still in flight when the timer fires again, that tick is skipped rather than queued, so a slow device self-throttles instead of piling up ADB processes.
+- The PNG is decoded and re-encoded with `sharp` — `metadata()` first to read the device's native resolution, then `resize({ width: 900, withoutEnlargement: true })` followed by `.jpeg({ quality: 76, mozjpeg: true })`. Only the resulting JPEG `Buffer` is kept, in the module-level `latestFrame` variable; the previous buffer becomes eligible for GC on the next successful capture. Nothing touches disk.
+- The device connection (`adb devices`) is only re-verified periodically (`DEVICE_RECHECK_MS = 3000`) or immediately after an error, not on every single frame capture, to keep ADB overhead low. While `lastError` is set, capture ticks between recheck windows return early without spawning `adb` at all.
+- `adb` calls run through two thin wrappers: `adbText` (`encoding: "utf8"`, 8s timeout, 4MB `maxBuffer`) for command output like `adb devices`, and `adbBuffer` (`encoding: "buffer"`, 10s timeout, 32MB `maxBuffer`) for the screenshot itself. Both use `execFileAsync`, the `promisify`'d form of `child_process.execFile`, so `adb` runs as a genuine child process — it never blocks Node's event loop, and argument arrays are passed straight to `execve`-style spawning rather than being interpolated into a shell string.
+- Every pointer/keyboard/tap/swipe/type request that reaches the server is funneled through a single in-process promise chain (`queueInput`), so rapid clicks execute as sequential `adb shell input ...` calls in the order they were received, rather than as overlapping child processes that could race or land on the device out of order.
+- The browser holds a persistent `EventSource` connection to `/api/events`. The server pushes a status payload (`Content-Type: text/event-stream`, `Cache-Control: no-store`) over Server-Sent Events every time a new frame is captured or an error occurs, instead of the browser polling blindly. The browser only re-fetches `/api/frame.jpg` when the pushed `frameVersion` actually changes; the endpoint itself is also served with cache-busting headers (`no-store, no-cache, must-revalidate`) so an intermediate cache can't serve a stale frame.
+- Every pointer/keyboard action in the browser becomes exactly one `adb shell input ...` call. Coordinates are translated from on-screen pixels back to the device's real resolution (`sourceWidth`/`sourceHeight`, captured from the PNG metadata) before being sent, and are clamped server-side to `[0, sourceWidth - 1]` / `[0, sourceHeight - 1]` regardless of what the browser computes.
 
 ## Event listeners
 
@@ -51,6 +54,7 @@ It does **not** call Feeld's private API, scrape profiles, automate likes/messag
 | --- | --- | --- |
 | `"error"` | `server` (the `http.Server` returned by `app.listen`) | Prints a friendly message and exits if `PORT` is already in use (`EADDRINUSE`); rethrows anything else. |
 | `"close"` | each SSE request in `/api/events` | Removes that client from the broadcast set once the browser tab closes or navigates away. |
+| `"error"` | each SSE response in `/api/events` | Removes that client from the broadcast set if a write hits an already-broken pipe (e.g. the OS tore down the socket before the request's `"close"` event fired). Without this listener, that write failure would surface as an `uncaughtException` and take the whole server down over a single dead browser tab. `broadcastStatus()` also wraps each `client.write()` in a `try/catch` as a second line of defense. |
 | `"SIGINT"` / `"SIGTERM"` | `process` | Stops the capture timer, closes all open SSE connections, and closes the HTTP server before exiting. |
 | `"uncaughtException"` | `process` | Logs the error and shuts down instead of leaving a raw stack trace and a hung process. |
 | `"unhandledRejection"` | `process` | Same safety net as above, for a promise rejection nothing awaited or caught. |
@@ -171,6 +175,8 @@ ADB_SERIAL=emulator-5554 npm start
 
 Starting the server without `ADB_SERIAL` while multiple devices are attached will fail fast with an explicit error rather than guessing which device to control.
 
+Internally, `assertDevice()` runs `adb devices`, parses stdout by splitting on newlines, discarding the header row, and keeping only lines ending in the literal suffix `\tdevice` (`adb`'s tab-separated status column — this excludes `unauthorized` and `offline` states, not just missing ones). With `ADB_SERIAL` set, it looks for a line starting with `${ADB_SERIAL}\t`; without it, it requires the filtered list to contain exactly one entry. Every subsequent `adb` invocation is prefixed with `-s <serial>` (via `adbArgs()`) whenever `ADB_SERIAL` is set, so the target device is pinned for the lifetime of the process rather than re-resolved per call.
+
 ## Configuration
 
 All configuration is via environment variables; there is no config file.
@@ -210,7 +216,7 @@ The server only exposes these local endpoints; there is no external network call
 | `POST /api/open-feeld` | *(none)* | Launches `FEELD_PACKAGE` via `monkey`. |
 | `POST /api/wake` | *(none)* | Sends `KEYCODE_WAKEUP`. |
 
-All endpoints return `{ error: string }` with a non-2xx status on failure (e.g. no device connected, invalid coordinates).
+All endpoints return `{ error: string }` with a non-2xx status on failure (e.g. no device connected, invalid coordinates). Status codes in practice: `400` for request validation failures (`/api/tap`, `/api/swipe`, `/api/key`, `/api/type`), `500` for ADB/device failures on endpoints that don't validate a body (`/api/open-feeld`, `/api/wake`), and `503` from `/api/frame.jpg` / an unhealthy `/api/status` when no frame has been captured yet. A final catch-all Express error-handling middleware (4-arg signature, registered after every route) converts anything that isn't already a JSON response — a malformed JSON body, a body over the 16KB limit, or any error a route forwards via `next(err)` — into the same `{ error }` shape instead of Express's default HTML error page, which would otherwise leak a Node stack trace and local file paths to the browser.
 
 ## Troubleshooting
 
@@ -232,7 +238,7 @@ All endpoints return `{ error: string }` with a non-2xx status on failure (e.g. 
 
 ## Security notes
 
-- **Keep `HOST=127.0.0.1`.** Binding to `0.0.0.0` (or any non-loopback interface) would expose your live phone screen and full tap/swipe/type control to anything else on the same network, with no authentication in front of it.
+- **Keep `HOST=127.0.0.1`.** Binding to `0.0.0.0` (or any non-loopback interface) would expose your live phone screen and full tap/swipe/type control to anything else on the same network, with no authentication in front of it. The server checks `HOST` against a small allowlist (`127.0.0.1`, `localhost`, `::1`, `[::1]`) at startup and prints a `console.warn` banner to stderr if it isn't one of those — a reminder, not a hard block, since it can't validate every possible loopback-equivalent value a given OS/network stack might accept.
 - There is no login, token, or CSRF protection by design. This is meant to be a single-user, single-machine tool; see [Use via SSH](#use-via-ssh) if you need to reach it from another device.
 - The server only shells out to a fixed `adb` binary with argument arrays (`execFile`, never a shell string), so request bodies cannot inject arbitrary shell commands. Even so, treat the local port as equivalent to physical access to the unlocked phone.
 - Frames are kept in memory only (`latestFrame` buffer) and are overwritten every capture cycle; nothing is persisted to disk by this server.
@@ -275,7 +281,9 @@ npm run check   # node --check server.js (syntax validation only, no test suite)
 npm start
 ```
 
-There is no build step or bundler. `server.js` is plain ESM run directly by Node, and `public/index.html` is a single static file with inline CSS/JS served as-is.
+There is no build step or bundler. `server.js` is plain ESM (`"type": "module"` in `package.json`) run directly by Node, and `public/index.html` is a single static file with inline CSS/JS served as-is.
+
+Runtime dependencies are deliberately minimal: [`express@^5`](https://expressjs.com/) for routing/static serving/JSON body parsing, and [`sharp@^0.34`](https://sharp.pixelplumbing.com/) (a native binding over `libvips`) for PNG→JPEG transcoding and resizing. Express 5 forwards rejected promises from `async` route handlers to error-handling middleware automatically, but every handler here still uses an explicit `try/catch` so the intended status code (`400` vs `500`) is never ambiguous. There is no test suite; `npm run check` only runs `node --check server.js`, a parse-only syntax check, not a semantic one.
 
 ## Author 
 Michael  Mendy (c) 2026.

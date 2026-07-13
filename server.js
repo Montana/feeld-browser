@@ -24,6 +24,8 @@ function requireValidInterval(rawValue, value) {
   return value;
 }
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
 const HOST = process.env.HOST ?? "127.0.0.1";
 const PORT = requireValidPort(process.env.PORT, Number(process.env.PORT ?? 4173));
 const ADB_SERIAL = process.env.ADB_SERIAL?.trim() || null;
@@ -131,7 +133,13 @@ function statusPayload() {
 function broadcastStatus() {
   if (sseClients.size === 0) return;
   const payload = `data: ${JSON.stringify(statusPayload())}\n\n`;
-  for (const client of sseClients) client.write(payload);
+  for (const client of sseClients) {
+    try {
+      client.write(payload);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
 }
 
 async function captureFrame() {
@@ -201,6 +209,11 @@ app.get("/api/events", (req, res) => {
 
   sseClients.add(res);
   req.on("close", () => sseClients.delete(res));
+  // A write to an already-broken pipe (e.g. the OS killed the tab's socket
+  // before the "close" event ran) emits "error" on the response. Without a
+  // listener that becomes an uncaughtException and would shut down the
+  // whole server over one dead browser tab, so just drop the client.
+  res.on("error", () => sseClients.delete(res));
 });
 
 app.get("/api/frame.jpg", (_req, res) => {
@@ -319,6 +332,23 @@ app.post("/api/wake", async (_req, res) => {
     res.status(500).json({ error: errorMessage(error) });
   }
 });
+
+// Catches malformed/oversized JSON bodies from express.json() (and any
+// error a route handler forwards via next(err)) so API clients always get
+// the same { error } JSON shape instead of Express's default HTML page,
+// which would otherwise leak a stack trace and local file paths.
+app.use((err, _req, res, _next) => {
+  const status = err.status ?? err.statusCode ?? 500;
+  res.status(status).json({ error: status < 500 ? err.message : "Internal server error." });
+});
+
+if (!LOOPBACK_HOSTS.has(HOST)) {
+  console.warn(
+    `Feeld Browser Bridge: HOST is set to '${HOST}', not a loopback address. ` +
+    "This exposes your phone's screen and full input control to your network with no authentication. " +
+    "See the Security notes section in README.md."
+  );
+}
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`Feeld Browser Bridge: http://${HOST}:${PORT}`);
